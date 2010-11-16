@@ -13,48 +13,58 @@ from gunicorn.app.base import Application
 
 class DjangoApplication(Application):
     
-    def init(self, parser, opts, args):
-        from django.conf import ENVIRONMENT_VARIABLE
-        from django.core.management import setup_environ
+    def init_with_file(self, file_name):
+        file_name = os.path.abspath(os.path.normpath(file_name))
 
-        self.project_path = os.getcwd()
-        if args:
-            settings_path = os.path.abspath(os.path.normpath(args[0]))
-            if not os.path.exists(settings_path):
-                self.no_settings(settings_path)
-            else:
-                self.project_path = os.path.dirname(settings_path)
-        else:
-            try:
-                self.settings_modname = os.environ[ENVIRONMENT_VARIABLE]
-                try:
-                    import settings
-                    setup_environ(settings)
-                except ImportError:
-                    self.no_settings(settings_path, import_error=True)
-                return
-            except KeyError:
-                settings_path = os.path.join(self.project_path, "settings.py")
-                if not os.path.exists(settings_path):
-                    self.no_settings(settings_path)
+        if not os.path.exists(file_name):
+            return False
 
-        project_name = os.path.split(self.project_path)[-1]
-        settings_name, ext  = os.path.splitext(os.path.basename(settings_path))
-        self.settings_modname = "%s.%s" % (project_name, settings_name)
+        basename = os.path.basename(file_name)
+        self.project_path = os.path.dirname(file_name)
+        self.settings_modname = "%s.%s" % (os.path.split(self.project_path)[-1], os.path.splitext(basename)[0])
         self.cfg.set("default_proc_name", self.settings_modname)
 
         sys.path.insert(0, self.project_path)
         sys.path.append(os.path.join(self.project_path, os.pardir))
+        return True
 
-    def no_settings(self, path, import_error=False):
-        if import_error:
-            error = "Error: Can't find the file 'settings.py' %r." % __file__
-        else:
-            error = "Settings file '%s' not found in current folder.\n" % path
-        sys.stderr.write(error)
-        sys.stderr.flush()
-        sys.exit(1)
+    def init_with_module(self, module_name):
+        from django.core.management import setup_environ
+        try:
+            __import__(module_name)
+            setup_environ(sys.modules[module_name])
+            self.settings_modname = module_name
+            return True
+        except:
+            return False
+
+    def init(self, parser, opts, args):
+        from django.conf import ENVIRONMENT_VARIABLE
+
+        # Look for a valid settings specification, in this order :
+        #   With command line arguments specified:
+        #     - filename from command line
+        #     - settings module from command line
+        #   Without command line arguments:
+        #     - settings.py in the current folder
+        #     - settings module in DJANGO_SETTINGS_MODULE env var
         
+        search = lambda: False
+        if args:
+            search = lambda: self.init_with_file(args[0]) or self.init_with_module(args[0])
+            error = "Error: Cannot find settings file or module '%s'" % args[0]
+        else:
+            search = lambda: self.init_with_file("settings.py") or \
+                        ( ENVIRONMENT_VARIABLE in os.environ and \
+                            self.init_with_module(os.environ[ENVIRONMENT_VARIABLE]) )
+            error = "Error: No settings file found in the current directory, and mising or invalid $%s" % ENVIRONMENT_VARIABLE
+
+        if not search():
+            sys.stderr.write(error)
+            sys.stderr.flush()
+            sys.exit(1)
+        
+
     def load(self):
         from django.conf import ENVIRONMENT_VARIABLE
         from django.core.handlers.wsgi import WSGIHandler
